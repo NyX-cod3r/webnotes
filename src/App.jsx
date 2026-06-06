@@ -9,6 +9,95 @@ function stripHtml(html) {
   return doc.body.textContent || doc.body.innerText || "";
 }
 
+// IndexedDB Helper Functions to persist Directory Handles across app restarts
+const DB_NAME = "WebNotesDB";
+const STORE_NAME = "handles";
+const KEY_NAME = "notesDirHandle";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function storeDirectoryHandle(handle) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.put(handle, KEY_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function getStoredDirectoryHandle() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(KEY_NAME);
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function clearStoredDirectoryHandle() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.delete(KEY_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function verifyPermission(handle, readWrite = true) {
+  const options = {};
+  if (readWrite) {
+    options.mode = "readwrite";
+  }
+  if ((await handle.queryPermission(options)) === "granted") {
+    return true;
+  }
+  if ((await handle.requestPermission(options)) === "granted") {
+    return true;
+  }
+  return false;
+}
+
+async function readNotesFromDirectory(dirHandle) {
+  try {
+    const fileHandle = await dirHandle.getFileHandle("notes.json");
+    const file = await fileHandle.getFile();
+    const text = await file.text();
+    return JSON.parse(text);
+  } catch (err) {
+    // Return empty array if file does not exist
+    return [];
+  }
+}
+
+async function writeNotesToDirectory(dirHandle, notes) {
+  try {
+    const fileHandle = await dirHandle.getFileHandle("notes.json", { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(JSON.stringify(notes, null, 2));
+    await writable.close();
+  } catch (err) {
+    console.error("Failed to write notes.json to local directory:", err);
+  }
+}
+
 // WYSIWYG Rich-Text Toolbar Component
 function RichTextToolbar({ executeCommand, insertTable }) {
   return (
@@ -268,6 +357,10 @@ function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
+  const [dirHandle, setDirHandle] = useState(null);
+  const [dirName, setDirName] = useState("");
+  const [needsPermission, setNeedsPermission] = useState(false);
+
   const editorRef = useRef(null);
   const savedRangeRef = useRef(null);
 
@@ -292,6 +385,51 @@ function App() {
     () => notes.find((note) => note.id === selectedId) ?? null,
     [notes, selectedId],
   );
+
+  // Load directory handles and notes on mount
+  useEffect(() => {
+    async function loadStoredHandle() {
+      try {
+        const storedHandle = await getStoredDirectoryHandle();
+        if (storedHandle) {
+          setDirName(storedHandle.name);
+          const hasPerm = (await storedHandle.queryPermission({ mode: "readwrite" })) === "granted";
+          if (hasPerm) {
+            setDirHandle(storedHandle);
+            const loadedNotes = await readNotesFromDirectory(storedHandle);
+            if (loadedNotes && loadedNotes.length > 0) {
+              setNotes(loadedNotes);
+              setSelectedId(loadedNotes[0].id);
+            }
+          } else {
+            setNeedsPermission(true);
+          }
+        } else {
+          // Fallback to localStorage
+          const saved = localStorage.getItem("webnotes_data");
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            setNotes(parsed);
+            if (parsed.length > 0) {
+              setSelectedId(parsed[0].id);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load stored directory handle:", err);
+      }
+    }
+    loadStoredHandle();
+  }, []);
+
+  // Save notes dynamically whenever note state changes
+  useEffect(() => {
+    if (dirHandle) {
+      writeNotesToDirectory(dirHandle, notes);
+    } else {
+      localStorage.setItem("webnotes_data", JSON.stringify(notes));
+    }
+  }, [notes, dirHandle]);
 
   // Synchronize editor innerHTML when note selection changes
   useEffect(() => {
@@ -396,7 +534,72 @@ function App() {
     );
   }
 
-  // Selection save and restore management
+  // Browser directory picker connection handlers
+  const handleConnectDirectory = async () => {
+    try {
+      if (!window.showDirectoryPicker) {
+        alert(
+          "Local file system sync is not supported in this browser. Please use Chrome, Edge, or other Chromium-based browsers."
+        );
+        return;
+      }
+      const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+      await storeDirectoryHandle(handle);
+      setDirHandle(handle);
+      setDirName(handle.name);
+      setNeedsPermission(false);
+
+      const loadedNotes = await readNotesFromDirectory(handle);
+      if (loadedNotes && loadedNotes.length > 0) {
+        const confirmLoad = window.confirm(
+          `Found ${loadedNotes.length} notes in folder "${handle.name}". Load folder notes? (Warning: This will overwrite browser memory notes)`
+        );
+        if (confirmLoad) {
+          setNotes(loadedNotes);
+          setSelectedId(loadedNotes[0].id);
+        } else {
+          await writeNotesToDirectory(handle, notes);
+        }
+      } else {
+        await writeNotesToDirectory(handle, notes);
+      }
+    } catch (err) {
+      console.error("Failed to connect local folder:", err);
+    }
+  };
+
+  const handleAuthorizeDirectory = async () => {
+    try {
+      const storedHandle = await getStoredDirectoryHandle();
+      if (storedHandle) {
+        const granted = await verifyPermission(storedHandle, true);
+        if (granted) {
+          setDirHandle(storedHandle);
+          setNeedsPermission(false);
+          const loadedNotes = await readNotesFromDirectory(storedHandle);
+          if (loadedNotes && loadedNotes.length > 0) {
+            setNotes(loadedNotes);
+            setSelectedId(loadedNotes[0].id);
+          } else {
+            await writeNotesToDirectory(storedHandle, notes);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to authorize directory handle:", err);
+    }
+  };
+
+  const handleDisconnectDirectory = async () => {
+    if (window.confirm(`Disconnect folder "${dirName}"? Syncing will stop.`)) {
+      await clearStoredDirectoryHandle();
+      setDirHandle(null);
+      setDirName("");
+      setNeedsPermission(false);
+    }
+  };
+
+  // Selection save and restore management for WYSIWYG editing focus
   const saveSelection = () => {
     const selection = window.getSelection();
     if (selection.rangeCount > 0) {
@@ -476,7 +679,7 @@ function App() {
       selection.removeAllRanges();
       selection.addRange(newRange);
     }
-    
+
     if (editorRef.current) {
       handleChange("body", editorRef.current.innerHTML);
     }
@@ -508,17 +711,94 @@ function App() {
       <main className="content">
         {selectedNote ? (
           <div className="main-workspace">
-            {/* Top Workspace Header (horizontal grey bar from wireframe containing formatting toolbar) */}
+            {/* Top Workspace Header (formatting toolbar & local directory sync status) */}
             <div className="workspace-toolbar">
               <RichTextToolbar executeCommand={executeCommand} insertTable={insertTable} />
 
-              <div className="toolbar-actions-group" style={{ display: "flex", gap: "0.5rem" }}>
+              <div className="toolbar-actions-group" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                {/* PWA Local Folder Sync Controllers */}
+                {dirHandle ? (
+                  <div
+                    className="folder-sync-status"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.4rem",
+                      fontSize: "0.82rem",
+                      background: "#121e16",
+                      border: "1px solid #23362a",
+                      padding: "0.4rem 0.65rem",
+                      borderRadius: "var(--radius-sm)",
+                      color: "#a2e3a6"
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" className="icon" style={{ width: "0.9rem", height: "0.9rem", stroke: "#5cd067", fill: "none" }}>
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span>Synced: {dirName}</span>
+                    <button
+                      type="button"
+                      onClick={handleDisconnectDirectory}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "#ff5555",
+                        cursor: "pointer",
+                        padding: "0 0.1rem",
+                        fontWeight: "bold",
+                        fontSize: "0.85rem"
+                      }}
+                      title="Disconnect Local Folder"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : needsPermission ? (
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={handleAuthorizeDirectory}
+                    style={{
+                      padding: "0.45rem 0.75rem",
+                      fontSize: "0.85rem",
+                      borderColor: "#a37015",
+                      background: "#251b0f",
+                      color: "#ffd580",
+                      borderRadius: "var(--radius-sm)",
+                      cursor: "pointer"
+                    }}
+                  >
+                    Authorize Sync
+                  </button>
+                ) : (
+                  window.showDirectoryPicker && (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={handleConnectDirectory}
+                      style={{
+                        padding: "0.45rem 0.75rem",
+                        fontSize: "0.85rem",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.3rem",
+                        borderRadius: "var(--radius-sm)"
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" className="icon" style={{ width: "0.85rem", height: "0.85rem", fill: "none" }}>
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                      Local Sync
+                    </button>
+                  )
+                )}
+
                 <button
                   type="button"
                   className="button button--ghost"
                   title="Copy Plain Text"
                   onClick={handleCopyText}
-                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem" }}
+                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem", borderRadius: "var(--radius-sm)" }}
                 >
                   Copy
                 </button>
@@ -527,7 +807,7 @@ function App() {
                   className="button button--ghost"
                   title="Download Note"
                   onClick={() => handleDownloadNote(selectedNote)}
-                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem" }}
+                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem", borderRadius: "var(--radius-sm)" }}
                 >
                   Download
                 </button>
@@ -536,7 +816,7 @@ function App() {
                   className="button button--ghost"
                   title="Share Note"
                   onClick={() => handleShareNote(selectedNote)}
-                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem" }}
+                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem", borderRadius: "var(--radius-sm)" }}
                 >
                   Share
                 </button>
@@ -544,7 +824,7 @@ function App() {
                   type="button"
                   className="button button--ghost"
                   onClick={handleClearSelection}
-                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem" }}
+                  style={{ padding: "0.45rem 0.75rem", fontSize: "0.85rem", borderRadius: "var(--radius-sm)" }}
                 >
                   Close
                 </button>
