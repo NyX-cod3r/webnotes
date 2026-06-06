@@ -2,26 +2,9 @@ import Sidebar from "./sidebar";
 import "./App.css";
 import { useMemo, useState } from "react";
 
-const initialNotes = [
-  {
-    id: 1,
-    title: "Project outline",
-    body: "Capture the direction, decisions, and next steps here.",
-    updatedAt: "Today",
-    preview: "Capture the direction, decisions, and next steps here.",
-  },
-  {
-    id: 2,
-    title: "Design review",
-    body: "Check spacing, hierarchy, empty states, and responsive behavior.",
-    updatedAt: "Yesterday",
-    preview: "Check spacing, hierarchy, empty states, and responsive behavior.",
-  },
-];
-
 function App() {
-  const [notes, setNotes] = useState(initialNotes);
-  const [selectedId, setSelectedId] = useState(initialNotes[0]?.id ?? null);
+  const [notes, setNotes] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
   const filteredNotes = useMemo(
@@ -191,8 +174,7 @@ function App() {
             </>
           ) : (
             <div className="empty-state">
-              <span className="empty-state__label">Nothing open</span>
-              <p>Create a note from the toolbar to start writing.</p>
+              <p>Create a new note.</p>
             </div>
           )}
         </section>
