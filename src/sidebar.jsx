@@ -1,3 +1,5 @@
+import addNoteIcon from "./assets/add_notes.svg";
+
 function Sidebar({ notes, selectedId, onSelectNote, searchQuery, onSearchChange, onCreateNote, onDeleteNote, onShareNote, onDownloadNote }) {
     return (
         <aside className="sidebar">
@@ -9,10 +11,8 @@ function Sidebar({ notes, selectedId, onSelectNote, searchQuery, onSearchChange,
                         <input type="search" placeholder="Search notes" value={searchQuery} onChange={(event) => onSearchChange(event.target.value)} />
                     </label>
 
-                    <button type="button" className="button button--primary sidebar__create" onClick={onCreateNote} aria-label="New note">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="icon">
-                            <path d="M12 5v14M5 12h14" />
-                        </svg>
+                    <button type="button" className="button button--primary sidebar__create" onClick={onCreateNote} aria-label="New note" title="New note">
+                        <img src={addNoteIcon} alt="" aria-hidden="true" className="sidebar__create-icon" />
                     </button>
                 </div>
             </div>
