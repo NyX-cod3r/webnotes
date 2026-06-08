@@ -1,5 +1,7 @@
 import addNoteIcon from "./assets/add_notes.svg";
 
+// This sidebar component keeps track of our note list, search input, and action buttons.
+// It displays all search-filtered notes and gives users easy access to create, delete, share, or download their notes.
 function Sidebar({ notes, selectedId, onSelectNote, searchQuery, onSearchChange, onCreateNote, onDeleteNote, onShareNote, onDownloadNote }) {
     return (
         <aside className="sidebar">

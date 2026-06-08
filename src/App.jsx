@@ -2,18 +2,19 @@ import Sidebar from "./sidebar";
 import "./App.css";
 import { useMemo, useState, useRef, useEffect } from "react";
 
-// Strip HTML tags helper to generate plain text preview and search
+// We use this helper to strip out HTML tags from notes. This lets us generate a clean, plain text preview of the note and also makes searching through the note text much simpler.
 function stripHtml(html) {
   if (!html) return "";
   const doc = new DOMParser().parseFromString(html, "text/html");
   return doc.body.textContent || doc.body.innerText || "";
 }
 
-// IndexedDB Helper Functions to persist Directory Handles across app restarts
+// Below are IndexedDB helper functions. We use IndexedDB to safely store the user's selected local folder handle. This means the user doesn't have to keep selecting their folder from the folder picker every time they refresh the page.
 const DB_NAME = "WebNotesDB";
 const STORE_NAME = "handles";
 const KEY_NAME = "notesDirHandle";
 
+// Opens connection to our IndexedDB database and sets up the object store if it is the first time running.
 function openDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, 1);
@@ -28,6 +29,7 @@ function openDB() {
   });
 }
 
+// Stores the selected directory handle so we can automatically reload it next session.
 async function storeDirectoryHandle(handle) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -39,6 +41,7 @@ async function storeDirectoryHandle(handle) {
   });
 }
 
+// Retrieves the stored directory handle when the app boots up.
 async function getStoredDirectoryHandle() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -50,6 +53,7 @@ async function getStoredDirectoryHandle() {
   });
 }
 
+// Clears the stored directory handle when the user decides to stop syncing notes with their local folder.
 async function clearStoredDirectoryHandle() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -61,6 +65,7 @@ async function clearStoredDirectoryHandle() {
   });
 }
 
+// Verifies if we already have read/write permission to the directory handle, and if not, asks the user to grant it.
 async function verifyPermission(handle, readWrite = true) {
   const options = {};
   if (readWrite) {
@@ -75,6 +80,7 @@ async function verifyPermission(handle, readWrite = true) {
   return false;
 }
 
+// Reads and parses the notes.json file from the synced folder. If it doesn't exist, it returns an empty array.
 async function readNotesFromDirectory(dirHandle) {
   try {
     const fileHandle = await dirHandle.getFileHandle("notes.json");
@@ -87,6 +93,7 @@ async function readNotesFromDirectory(dirHandle) {
   }
 }
 
+// Saves our notes list as a formatted JSON file inside the user's selected directory.
 async function writeNotesToDirectory(dirHandle, notes) {
   try {
     const fileHandle = await dirHandle.getFileHandle("notes.json", { create: true });
@@ -98,7 +105,8 @@ async function writeNotesToDirectory(dirHandle, notes) {
   }
 }
 
-// WYSIWYG Rich-Text Toolbar Component
+// The WYSIWYG Rich-Text Toolbar Component.
+// This component displays all formatting controls (font type, bold, text alignment, lists, tables, highlight colors) and hooks them up to the text editor canvas.
 function RichTextToolbar({ executeCommand, insertTable }) {
   return (
     <div className="notes-toolbar">
@@ -352,6 +360,8 @@ function RichTextToolbar({ executeCommand, insertTable }) {
   );
 }
 
+// App is the main dashboard component of our notes editor. It is responsible for loading
+// active state, filtering searches, syncing notes, and managing the active editing viewport.
 function App() {
   const [notes, setNotes] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -364,6 +374,7 @@ function App() {
   const editorRef = useRef(null);
   const savedRangeRef = useRef(null);
 
+  // Computes the list of notes matching the search query so we only display relevant notes in the sidebar.
   const filteredNotes = useMemo(
     () =>
       notes.filter((note) => {
@@ -381,12 +392,14 @@ function App() {
     [notes, searchQuery],
   );
 
+  // Keeps track of the note document that is currently selected and active in the editor view.
   const selectedNote = useMemo(
     () => notes.find((note) => note.id === selectedId) ?? null,
     [notes, selectedId],
   );
 
-  // Load directory handles and notes on mount
+  // On initial mount, we attempt to retrieve any previously synced directory handle from IndexedDB.
+  // If we find one, we ask the browser for permissions and load notes.json. If there isn't one, we fallback to LocalStorage.
   useEffect(() => {
     async function loadStoredHandle() {
       try {
@@ -422,7 +435,7 @@ function App() {
     loadStoredHandle();
   }, []);
 
-  // Save notes dynamically whenever note state changes
+  // Saves updates to disk (via File System Access API) or LocalStorage whenever the list of notes changes.
   useEffect(() => {
     if (dirHandle) {
       writeNotesToDirectory(dirHandle, notes);
@@ -431,17 +444,20 @@ function App() {
     }
   }, [notes, dirHandle]);
 
-  // Synchronize editor innerHTML when note selection changes
+  // Synchronizes the visual content of the contenteditable area with the currently active note body,
+  // ensuring the text editor canvas matches the note state.
   useEffect(() => {
     if (selectedNote && editorRef.current && editorRef.current.innerHTML !== selectedNote.body) {
       editorRef.current.innerHTML = selectedNote.body;
     }
   }, [selectedNote?.id]);
 
+  // Switches the active view to display the note selected by the user.
   function handleSelectNote(noteId) {
     setSelectedId(noteId);
   }
 
+  // Spawns a new blank note page at the top of the pile and automatically opens it in the editor viewport.
   function handleCreateNote() {
     const nextId = notes.length ? Math.max(...notes.map((note) => note.id)) + 1 : 1;
     const newNote = {
@@ -457,6 +473,8 @@ function App() {
     setSearchQuery("");
   }
 
+  // Shares a plain-text version of the note using the device's native sharing sheet,
+  // falling back to copying it to the clipboard if sharing is not supported by the browser.
   function handleShareNote(note) {
     if (!note) {
       return;
@@ -477,6 +495,7 @@ function App() {
     }
   }
 
+  // Downloads the note's plain text content as a physical .txt file directly to the user's Downloads directory.
   function handleDownloadNote(note) {
     if (!note) {
       return;
@@ -494,6 +513,7 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  // Deletes the active note, updates our list, and automatically shifts selection to the next logical note so the user isn't left in limbo.
   function handleDeleteNote(noteId) {
     const noteToDelete = notes.find((note) => note.id === noteId);
 
@@ -508,10 +528,13 @@ function App() {
     );
   }
 
+  // Deselects the active note, returning the workspace to an empty slate (useful on small phone views).
   function handleClearSelection() {
     setSelectedId(null);
   }
 
+  // Updates specific text values (title or html body text) inside the active note,
+  // updates the timestamp, and regenerates the sidebar preview text dynamically.
   function handleChange(field, value) {
     if (!selectedNote) {
       return;
@@ -534,7 +557,8 @@ function App() {
     );
   }
 
-  // Browser directory picker connection handlers
+  // Pops up the native browser directory picker so the user can connect a folder on their hard drive.
+  // We save this folder reference locally in IndexedDB and load any notes.json file stored inside.
   const handleConnectDirectory = async () => {
     try {
       if (!window.showDirectoryPicker) {
@@ -568,6 +592,8 @@ function App() {
     }
   };
 
+  // Re-requests folder read/write permissions from the user using our stored handle.
+  // This is required because modern browsers revoke handle permissions whenever the app tab is closed or reloaded.
   const handleAuthorizeDirectory = async () => {
     try {
       const storedHandle = await getStoredDirectoryHandle();
@@ -590,6 +616,7 @@ function App() {
     }
   };
 
+  // Disconnects directory sync, removes the handle from IndexedDB, and resets back to standard browser LocalStorage mode.
   const handleDisconnectDirectory = async () => {
     if (window.confirm(`Disconnect folder "${dirName}"? Syncing will stop.`)) {
       await clearStoredDirectoryHandle();
@@ -599,7 +626,8 @@ function App() {
     }
   };
 
-  // Selection save and restore management for WYSIWYG editing focus
+  // Saves the active cursor position or highlighted text range inside our text editor canvas.
+  // This is vital so we can restore the user's cursor position when they click styling buttons on the toolbar.
   const saveSelection = () => {
     const selection = window.getSelection();
     if (selection.rangeCount > 0) {
@@ -610,6 +638,7 @@ function App() {
     }
   };
 
+  // Restores the previously saved text selection range back to the editable viewport.
   const restoreSelection = () => {
     if (savedRangeRef.current) {
       const selection = window.getSelection();
@@ -618,6 +647,7 @@ function App() {
     }
   };
 
+  // Executes a browser-native text formatting command (e.g. bold, italic, font family) at the active cursor position.
   const executeCommand = (command, value = null) => {
     restoreSelection();
     if (editorRef.current) {
@@ -629,6 +659,7 @@ function App() {
     }
   };
 
+  // Constructs a formatted HTML table grid structure and inserts it directly at the user's cursor position.
   const insertTable = () => {
     restoreSelection();
     if (editorRef.current) {
@@ -685,6 +716,7 @@ function App() {
     }
   };
 
+  // Copies the title and parsed plain text content of the active note directly to the system clipboard.
   const handleCopyText = () => {
     if (!selectedNote) return;
     const text = `${selectedNote.title}\n\n${stripHtml(selectedNote.body)}`;
